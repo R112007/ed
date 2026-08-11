@@ -1,0 +1,7 @@
+./gradlew clean assembleRelease
+java -jar /opt/android-sdk/build-tools/36.0.0/lib/apksigner.jar sign \
+--ks /sdcard/AndroidKeys/edKey.jks \
+--ks-key-alias edKey \
+--out app-release-signed.apk \
+app/build/outputs/apk/release/app-release-unsigned.apk
+mv app-release-signed.apk ~/sd

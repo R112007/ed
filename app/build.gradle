@@ -1,0 +1,171 @@
+
+plugins {
+    id 'com.android.application'
+    id 'eclipse'
+}
+
+// Separate configuration for Arc native libraries (they are published as jars, not AARs).
+configurations {
+    natives
+}
+
+android {
+    namespace 'com.r112007.effecteditor'
+    compileSdk 34
+    buildToolsVersion '34.0.0'
+
+    defaultConfig {
+        applicationId 'com.r112007.effecteditor'
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+
+        multiDexEnabled true
+
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    packagingOptions {
+        exclude 'META-INF/INDEX.LIST'
+        exclude 'META-INF/DEPENDENCIES'
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/NOTICE'
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += ['build/runtime-assets']
+            // Keep the default jniLibs dir for AAR dependencies (e.g. tree-sitter)
+            // and also include libs/ where Arc native jars are extracted.
+            jniLibs.srcDirs = ['src/main/jniLibs', 'libs']
+            java.srcDirs = ['src/main/java']
+            resources.srcDirs = ['src/main/resources']
+        }
+    }
+}
+
+// Copy Arc native libraries (published as jars) into libs/ so Gradle packs them into the APK.
+// This mirrors the approach used by Mindustry's android/build.gradle.
+task copyAndroidNatives {
+    doLast {
+        configurations.natives.files.each { jar ->
+            copy {
+                from zipTree(jar)
+                into file('libs/')
+                include '**/*.so'
+                includeEmptyDirs = false
+            }
+        }
+    }
+}
+preBuild.dependsOn copyAndroidNatives
+
+// Pack Mindustry/Arc runtime classes into a jar that is placed in assets.
+// EffectCompiler extracts this jar at runtime to feed ECJ's classpath.
+task packRuntimeLibs(type: Jar) {
+    archiveFileName = 'runtime-libs.jar'
+    destinationDirectory = file('build/runtime-assets')
+    from {
+        configurations.debugRuntimeClasspath.findAll { dep ->
+            def name = dep.name.toLowerCase()
+            // Only bundle runtime classes needed to compile an Effect snippet.
+            // Exclude the compiler/dexer themselves, syntax tooling and AndroidX
+            // to keep the asset small and avoid loading unnecessary classes.
+            (dep.name.endsWith('.jar') || dep.name.endsWith('.aar')) &&
+                    !name.contains('ecj') &&
+                    !name.contains('r8') &&
+                    !name.contains('javaparser') &&
+                    !name.contains('tree-sitter') &&
+                    !name.startsWith('androidx')
+        }.collect { dep ->
+            if (dep.name.endsWith('.aar')) {
+                zipTree(dep).matching { include 'classes.jar' }.collect { classesJar ->
+                    zipTree(classesJar).matching { exclude 'META-INF/**' }
+                }
+            } else {
+                zipTree(dep).matching { exclude 'META-INF/**' }
+            }
+        }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+// Copy the Android SDK stub jar into assets so ECJ can use it as boot classpath at runtime.
+task copyAndroidJar(type: Copy) {
+    from "${android.sdkDirectory}/platforms/android-36/android.jar"
+    into 'build/runtime-assets'
+    rename { 'android.jar' }
+}
+
+preBuild.dependsOn packRuntimeLibs
+copyAndroidJar.dependsOn packRuntimeLibs
+preBuild.dependsOn copyAndroidJar
+
+// Copy Android build-tools lambda stubs into assets. ECJ needs these classes
+// (e.g. java.lang.invoke.LambdaMetafactory) to compile lambda expressions at
+// runtime, because the regular android.jar stubs omit them. This mirrors the
+// way AIDE supplies lambda stubs during on-device Java compilation.
+task copyLambdaStubs(type: Copy) {
+    from "${android.sdkDirectory}/build-tools/${android.buildToolsVersion}/core-lambda-stubs.jar"
+    into 'build/runtime-assets'
+    rename { 'core-lambda-stubs.jar' }
+}
+copyLambdaStubs.dependsOn copyAndroidJar
+preBuild.dependsOn copyLambdaStubs
+
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+    // Mindustry core (v159.7) and Arc matching hash
+    implementation "com.github.Anuken.Mindustry:core:v159.7"
+    implementation "com.github.Anuken.Arc:arc-core:$arcHash"
+    implementation "com.github.Anuken.Arc:backend-android:$arcHash"
+    // Arc native libraries are published as jars; use the 'natives' configuration
+    // and copyAndroidNatives extracts their .so files into libs/.
+    natives "com.github.Anuken.Arc:natives-android:$arcHash"
+    natives "com.github.Anuken.Arc:natives-freetype-android:$arcHash"
+
+    // AndroidX core utilities only
+    implementation 'androidx.core:core:1.13.1'
+
+    // Tree-sitter for fast syntax highlighting / incremental parse facade
+    implementation 'com.itsaky.androidide.treesitter:android-tree-sitter:4.2.0'
+    implementation 'com.itsaky.androidide.treesitter:tree-sitter-java:4.2.0'
+
+    // JavaParser for deep semantic analysis (triggered by analyze/export)
+    implementation 'com.github.javaparser:javaparser-core:3.25.8'
+
+    // On-device Java compiler + dexer for runtime Effect compilation.
+    // ECJ 3.38+ references java.lang.Runtime.Version (a JDK 9+ class that is
+    // missing on Android), so we pin a Java-17-capable version that is known
+    // to work on Android when combined with the SourceVersion stub.
+    implementation 'org.eclipse.jdt:ecj:3.26.0'
+    implementation 'com.android.tools:r8:8.11.32'
+
+    // ASM is used to read real parameter names from the runtime jar's
+    // LocalVariableTable, since reflection alone returns arg0/arg1 for
+    // classes compiled without -parameters.
+    implementation 'org.ow2.asm:asm:9.7'
+}
+

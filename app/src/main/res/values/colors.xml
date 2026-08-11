@@ -1,0 +1,24 @@
+<resources>
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Nvim / Tokyonight Night inspired editor theme -->
+    <color name="editor_bg">#FF1A1B26</color>
+    <color name="editor_text">#FFA9B1D6</color>
+    <color name="editor_keyword">#FFF7768E</color>
+    <color name="editor_string">#FF9ECE6A</color>
+    <color name="editor_number">#FFFF9E64</color>
+    <color name="editor_comment">#FF565F89</color>
+    <color name="editor_type">#FFE0AF68</color>
+    <color name="editor_function">#FF7AA2F7</color>
+    <color name="editor_variable">#FFBB9AF7</color>
+    <color name="editor_operator">#FF89DDFF</color>
+    <color name="editor_punctuation">#FF787C99</color>
+    <color name="status_ok">#FF9ECE6A</color>
+    <color name="status_error">#FFF7768E</color>
+</resources>

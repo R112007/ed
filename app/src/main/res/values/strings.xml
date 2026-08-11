@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">Mindustry Effect Editor</string>
+    <string name="hint_code">new Effect(40f, 80f, e -&gt; {\n    // your draw calls here\n});</string>
+    <string name="action_compile">编译</string>
+    <string name="action_export">导出</string>
+    <string name="action_reset">重置</string>
+    <string name="action_reset_view">视图</string>
+    <string name="action_complete">补全</string>
+    <string name="action_undo">←</string>
+    <string name="action_redo">→</string>
+    <string name="action_toggle_keys">键</string>
+    <string name="action_orientation">转屏</string>
+    <string name="action_format">格式化</string>
+    <string name="action_refresh">刷新</string>
+    <string name="compile_ok">编译成功</string>
+    <string name="compile_error">编译失败</string>
+    <string name="analyze_ok">语义分析通过</string>
+    <string name="export_ok">已导出</string>
+    <string name="status_ready">就绪</string>
+    <string name="full_status_title">完整信息</string>
+    <string name="copy">复制</string>
+    <string name="copied">已复制到剪贴板</string>
+    <string name="custom_sprites_path">自定义精灵图目录: %s</string>
+    <string name="action_toggle_line_tools">行</string>
+    <string name="action_copy_line">复制行</string>
+    <string name="action_cut_line">剪切行</string>
+    <string name="action_delete_line">删除行</string>
+    <string name="action_clear_line">清空行</string>
+    <string name="action_paste_line">粘贴行</string>
+</resources>

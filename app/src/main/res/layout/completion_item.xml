@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingStart="8dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="6dp"
+    android:background="#FF1A1B26">
+
+    <!-- Kind icon -->
+    <TextView
+        android:id="@+id/tv_kind"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:layout_marginEnd="8dp"
+        android:background="#FF24283B"
+        android:gravity="center"
+        android:text="C"
+        android:textColor="#FF7AA2F7"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:typeface="monospace" />
+
+    <!-- Completion label -->
+    <TextView
+        android:id="@+id/tv_label"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="#FFA9B1D6"
+        android:textSize="12sp"
+        android:typeface="monospace" />
+
+    <!-- Type / detail shown on the right -->
+    <TextView
+        android:id="@+id/tv_type"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:ellipsize="start"
+        android:maxLines="1"
+        android:textColor="#FF787C99"
+        android:textSize="11sp"
+        android:typeface="monospace" />
+</LinearLayout>

@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.EffectEditor" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/purple_500</item>
+        <item name="android:colorPrimaryDark">@color/purple_700</item>
+        <item name="android:colorAccent">@color/teal_200</item>
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>
