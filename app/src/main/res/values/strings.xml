@@ -27,4 +27,7 @@
     <string name="action_delete_line">删除行</string>
     <string name="action_clear_line">清空行</string>
     <string name="action_paste_line">粘贴行</string>
+    <string name="action_find_replace">查找</string>
+<string name="action_help">帮助</string>
+<string name="action_toggle_line_tools_visibility">行显</string>
 </resources>

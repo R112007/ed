@@ -23,7 +23,9 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
-
+import android.app.AlertDialog;
+import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 
@@ -41,6 +43,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Lightweight code editor backed by Tree-sitter for fast incremental parsing.
@@ -57,6 +61,22 @@ public class CodeEditorView extends EditText {
     // Minimum gutter width in dp; grows automatically when line count increases.
     private static final int MIN_GUTTER_DP = 48;
     private static final int GUTTER_PADDING_DP = 12;
+    private final Set<Integer> errorLineNumbers = new HashSet<>();
+    private final Paint errorLinePaint = new Paint();
+    private static final int ERROR_BG_COLOR = 0x33FF4444; // 半透明红
+
+    // 水平拖动相关
+    private int savedScrollX;
+    private boolean downDispatched;
+    private float lastTouchX;
+    private float lastTouchY;
+    private boolean isHorizontalScrolling;
+    private float downX, downY;
+    private long downTime;
+    private boolean longPressTriggered;
+    private final Runnable longPressRunnable = () -> {
+        longPressTriggered = true;
+    };
 
     private final Paint lineNumberPaint = new Paint();
     private final Paint gutterBackgroundPaint = new Paint();
@@ -76,7 +96,10 @@ public class CodeEditorView extends EditText {
     private boolean applyingHighlight = false;
     private final Object highlightLock = new Object();
     private AutoCompletePopup autoCompletePopup;
-    /** True while a completion item is being inserted; prevents auto-reopening the popup. */
+    /**
+     * True while a completion item is being inserted; prevents auto-reopening the
+     * popup.
+     */
     private boolean applyingCompletion = false;
 
     private final Runnable highlightRunnable = this::doHighlight;
@@ -111,6 +134,13 @@ public class CodeEditorView extends EditText {
     public CodeEditorView(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
         init(context);
+    }
+
+    /** 关闭语法补全下拉框 */
+    public void dismissAutoComplete() {
+        if (autoCompletePopup != null) {
+            autoCompletePopup.dismiss();
+        }
     }
 
     private void init(Context context) {
@@ -201,7 +231,8 @@ public class CodeEditorView extends EditText {
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
-                // Don't trigger or refresh completion while a completion item is being inserted,
+                // Don't trigger or refresh completion while a completion item is being
+                // inserted,
                 // otherwise the popup would dismiss and immediately reopen.
                 if (applyingCompletion) {
                     return;
@@ -232,6 +263,7 @@ public class CodeEditorView extends EditText {
                 updateGutterWidth();
             }
         });
+        errorLinePaint.setColor(ERROR_BG_COLOR);
     }
 
     /**
@@ -240,12 +272,15 @@ public class CodeEditorView extends EditText {
      */
     private void updateGutterWidth() {
         CharSequence text = getText();
-        if (text == null) return;
+        if (text == null)
+            return;
         int logicalLines = 1;
         for (int i = 0; i < text.length(); i++) {
-            if (text.charAt(i) == '\n') logicalLines++;
+            if (text.charAt(i) == '\n')
+                logicalLines++;
         }
-        if (logicalLines == lastLogicalLineCount) return;
+        if (logicalLines == lastLogicalLineCount)
+            return;
         lastLogicalLineCount = logicalLines;
 
         float density = getResources().getDisplayMetrics().density;
@@ -261,18 +296,102 @@ public class CodeEditorView extends EditText {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        // Let EditText draw its background and text first; otherwise the
-        // background color fills the padding area and covers the line numbers.
         super.onDraw(canvas);
         drawLineNumbers(canvas);
+        drawErrorHighlights(canvas); // ← 新增
+    }
+
+    /** 标红指定行号（1-based），传入 null 或空集合则清空 */
+    public void setErrorLines(Set<Integer> lines) {
+        errorLineNumbers.clear();
+        if (lines != null)
+            errorLineNumbers.addAll(lines);
+        invalidate();
+    }
+
+    /** 清除所有错误高亮 */
+    public void clearErrorLines() {
+        errorLineNumbers.clear();
+        invalidate();
+    }
+
+    private void drawErrorHighlights(Canvas canvas) {
+        if (errorLineNumbers.isEmpty())
+            return;
+        Layout layout = getLayout();
+        if (layout == null)
+            return;
+
+        Editable text = getText();
+        int lineCount = layout.getLineCount();
+        int verticalOffset = getCompoundPaddingTop(); // ← 关键修复：加上顶部 padding 偏移
+
+        for (int i = 0; i < lineCount; i++) {
+            int lineStart = layout.getLineStart(i);
+            // 跳过自动换行产生的"伪行"，只处理逻辑行首
+            if (lineStart > 0 && lineStart <= text.length() && text.charAt(lineStart - 1) != '\n') {
+                continue;
+            }
+
+            int logicalLine = 1;
+            for (int j = 0; j < lineStart && j < text.length(); j++) {
+                if (text.charAt(j) == '\n')
+                    logicalLine++;
+            }
+
+            if (errorLineNumbers.contains(logicalLine)) {
+                float top = verticalOffset + layout.getLineTop(i);
+                float bottom = verticalOffset + layout.getLineBottom(i);
+                float left = gutterWidthPx;
+                float right = Math.max(getWidth(), left + layout.getLineRight(i));
+                canvas.drawRect(left, top, right, bottom, errorLinePaint);
+            }
+        }
+    }
+
+    /** 跳转到指定行（1-based），并滚动到可视区域 */
+    public void goToLine(int line) {
+        if (line < 1)
+            line = 1;
+        Editable text = getText();
+        int targetLine = 1;
+        int pos = 0;
+        int len = text.length();
+        while (pos < len && targetLine < line) {
+            if (text.charAt(pos) == '\n')
+                targetLine++;
+            pos++;
+        }
+        // 跳过前导空白，光标落到第一个非空字符
+        while (pos < len && (text.charAt(pos) == ' ' || text.charAt(pos) == '\t')) {
+            pos++;
+        }
+        setSelection(Math.min(pos, len));
+        requestFocus();
+
+        // 垂直滚动确保该行可见
+        Layout layout = getLayout();
+        if (layout != null) {
+            int lineIndex = layout.getLineForOffset(Math.min(pos, len));
+            int lineTop = layout.getLineTop(lineIndex);
+            int lineBottom = layout.getLineBottom(lineIndex);
+            int visibleHeight = getHeight() - getCompoundPaddingTop() - getCompoundPaddingBottom();
+            if (lineTop < getScrollY()) {
+                scrollTo(getScrollX(), lineTop);
+            } else if (lineBottom > getScrollY() + visibleHeight) {
+                scrollTo(getScrollX(), lineBottom - visibleHeight);
+            }
+        }
     }
 
     private void drawLineNumbers(Canvas canvas) {
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
 
         int lineCount = layout.getLineCount();
-        if (lineCount == 0) return;
+        if (lineCount == 0)
+            return;
 
         int scrollY = getScrollY();
         int scrollX = getScrollX();
@@ -280,10 +399,12 @@ public class CodeEditorView extends EditText {
 
         int firstLine = layout.getLineForVertical(scrollY);
         int lastLine = layout.getLineForVertical(scrollY + viewHeight);
-        if (lastLine >= lineCount) lastLine = lineCount - 1;
+        if (lastLine >= lineCount)
+            lastLine = lineCount - 1;
 
         // Draw a subtle background for the gutter. Because the canvas is translated by
-        // scrollX/scrollY, drawing at scrollX keeps the gutter pinned to the view's left edge.
+        // scrollX/scrollY, drawing at scrollX keeps the gutter pinned to the view's
+        // left edge.
         canvas.drawRect(scrollX, scrollY, scrollX + gutterWidthPx, scrollY + viewHeight,
                 gutterBackgroundPaint);
 
@@ -310,7 +431,8 @@ public class CodeEditorView extends EditText {
 
             int logicalLine = 1;
             for (int j = 0; j < lineStart && j < text.length(); j++) {
-                if (text.charAt(j) == '\n') logicalLine++;
+                if (text.charAt(j) == '\n')
+                    logicalLine++;
             }
 
             float y = verticalOffset + layout.getLineBaseline(i);
@@ -319,9 +441,9 @@ public class CodeEditorView extends EditText {
     }
 
     /**
-     * Draws a line number digit by digit using a fixed cell width.  Some device
+     * Draws a line number digit by digit using a fixed cell width. Some device
      * monospace fonts still give digits slightly different widths, which makes
-     * the tens column wobble when using simple right-alignment.  Rendering each
+     * the tens column wobble when using simple right-alignment. Rendering each
      * digit in its own cell keeps the ones and tens columns perfectly aligned.
      */
     private void drawLineNumber(Canvas canvas, int logicalLine, float x, float y) {
@@ -382,7 +504,8 @@ public class CodeEditorView extends EditText {
     }
 
     public void undo() {
-        if (!canUndo()) return;
+        if (!canUndo())
+            return;
         uiHandler.removeCallbacks(commitHistoryRunnable);
         commitHistory();
         TextState current = captureState();
@@ -392,7 +515,8 @@ public class CodeEditorView extends EditText {
     }
 
     public void redo() {
-        if (!canRedo()) return;
+        if (!canRedo())
+            return;
         uiHandler.removeCallbacks(commitHistoryRunnable);
         commitHistory();
         TextState current = captureState();
@@ -421,18 +545,21 @@ public class CodeEditorView extends EditText {
     }
 
     private void savePendingHistoryState() {
-        if (applyingHighlight || isUndoOrRedo) return;
+        if (applyingHighlight || isUndoOrRedo)
+            return;
         pendingHistoryState = captureState();
     }
 
     private void scheduleHistoryCommit() {
-        if (applyingHighlight || isUndoOrRedo) return;
+        if (applyingHighlight || isUndoOrRedo)
+            return;
         uiHandler.removeCallbacks(commitHistoryRunnable);
         uiHandler.postDelayed(commitHistoryRunnable, HISTORY_DEBOUNCE_MS);
     }
 
     private void commitHistory() {
-        if (pendingHistoryState == null) return;
+        if (pendingHistoryState == null)
+            return;
         if (undoStack.size() >= MAX_HISTORY_SIZE) {
             undoStack.removeLast();
         }
@@ -453,7 +580,8 @@ public class CodeEditorView extends EditText {
      */
     public void insertText(CharSequence text) {
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Editable editable = getText();
         editable.insert(sel, text);
     }
@@ -461,9 +589,11 @@ public class CodeEditorView extends EditText {
     public void moveCursorToLineStart() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
         int line = layout.getLineForOffset(sel);
         setSelection(layout.getLineStart(line));
     }
@@ -471,7 +601,8 @@ public class CodeEditorView extends EditText {
     public void moveCursorToLineEnd() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         // Move to the end of the logical line (before the next '\n'), not just
         // the end of the current visual/wrapped line.
         Editable text = getText();
@@ -486,21 +617,25 @@ public class CodeEditorView extends EditText {
     public void moveCursorLeft() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel > 0) setSelection(sel - 1);
+        if (sel > 0)
+            setSelection(sel - 1);
     }
 
     public void moveCursorRight() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel >= 0 && sel < getText().length()) setSelection(sel + 1);
+        if (sel >= 0 && sel < getText().length())
+            setSelection(sel + 1);
     }
 
     public void moveCursorUp() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
         int line = layout.getLineForOffset(sel);
         if (line <= 0) {
             setSelection(0);
@@ -513,9 +648,11 @@ public class CodeEditorView extends EditText {
     public void moveCursorDown() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
         int line = layout.getLineForOffset(sel);
         int lastLine = layout.getLineCount() - 1;
         if (line >= lastLine) {
@@ -529,9 +666,11 @@ public class CodeEditorView extends EditText {
     public void pageUp() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
         int line = layout.getLineForOffset(sel);
         int visibleLines = Math.max(1, getHeight() / Math.max(1, getLineHeight()));
         int targetLine = Math.max(0, line - visibleLines);
@@ -542,9 +681,11 @@ public class CodeEditorView extends EditText {
     public void pageDown() {
         requestFocus();
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         Layout layout = getLayout();
-        if (layout == null) return;
+        if (layout == null)
+            return;
         int line = layout.getLineForOffset(sel);
         int lastLine = layout.getLineCount() - 1;
         int visibleLines = Math.max(1, getHeight() / Math.max(1, getLineHeight()));
@@ -558,7 +699,8 @@ public class CodeEditorView extends EditText {
         Editable editable = getText();
         int start = getCurrentLineStart();
         int end = getCurrentLineEndIncludingNewline();
-        if (start < 0 || end > editable.length() || start >= end) return;
+        if (start < 0 || end > editable.length() || start >= end)
+            return;
         String line = editable.subSequence(start, end).toString();
         ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) {
@@ -580,7 +722,8 @@ public class CodeEditorView extends EditText {
         Editable editable = getText();
         int start = getCurrentLineStart();
         int end = getCurrentLineEndIncludingNewline();
-        if (start < 0 || end > editable.length() || start >= end) return;
+        if (start < 0 || end > editable.length() || start >= end)
+            return;
         editable.delete(start, end);
         int newSel = Math.min(start, editable.length());
         setSelection(newSel);
@@ -595,82 +738,86 @@ public class CodeEditorView extends EditText {
         if (end > start && end <= editable.length() && editable.charAt(end - 1) == '\n') {
             end--;
         }
-        if (start < 0 || end > editable.length() || start > end) return;
+        if (start < 0 || end > editable.length() || start > end)
+            return;
         editable.replace(start, end, "");
         setSelection(start);
     }
 
-   /**
- * Inserts the latest clipboard content on a new empty line below the cursor.
- * <p>
- * The steps are:
- * <ol>
- * <li>Move the cursor to the end of the current line.</li>
- * <li>Press Enter (insert '\n') so a new empty line appears below.</li>
- * <li>Read the latest plain-text entry from the system clipboard.</li>
- * <li>Insert that text into the new empty line. Any trailing CR/LF on the
- * clipboard payload is stripped so the pasted content stays on a single
- * line and the cursor lands at the end of the pasted text.</li>
- * </ol>
- */
-public void pasteCurrentLine() {
-    requestFocus();
-    Editable editable = getText();
-    if (editable == null) return;
-    int sel = getSelectionStart();
-    if (sel < 0) sel = 0;
-    Layout layout = getLayout();
-    if (layout == null) return;
+    /**
+     * Inserts the latest clipboard content on a new empty line below the cursor.
+     * <p>
+     * The steps are:
+     * <ol>
+     * <li>Move the cursor to the end of the current line.</li>
+     * <li>Press Enter (insert '\n') so a new empty line appears below.</li>
+     * <li>Read the latest plain-text entry from the system clipboard.</li>
+     * <li>Insert that text into the new empty line. Any trailing CR/LF on the
+     * clipboard payload is stripped so the pasted content stays on a single
+     * line and the cursor lands at the end of the pasted text.</li>
+     * </ol>
+     */
+    public void pasteCurrentLine() {
+        requestFocus();
+        Editable editable = getText();
+        if (editable == null)
+            return;
+        int sel = getSelectionStart();
+        if (sel < 0)
+            sel = 0;
+        Layout layout = getLayout();
+        if (layout == null)
+            return;
 
-    // === 核心修复：强制在当前行末尾插入换行符 ===
-    int lineEnd = layout.getLineEnd(layout.getLineForOffset(sel));
-    // 如果当前行末尾已有换行符（非最后一行），则光标实际在下一行开头
-    boolean isAtLineEnd = (sel == lineEnd - (getText().charAt(lineEnd - 1) == '\n' ? 1 : 0));
-    
-    int insertPos;
-    if (isAtLineEnd) {
-        // 情况1：光标已在行尾 → 插入新换行符创建空行
-        editable.insert(sel, "\n");
-        insertPos = sel + 1; // 新行开头位置
-    } else {
-        // 情况2：光标不在行尾 → 先跳到行尾再插入换行符
-        int lineStart = layout.getLineStart(layout.getLineForOffset(sel));
-        int newlineAt = getText().toString().indexOf('\n', lineStart);
-        insertPos = (newlineAt < 0) ? getText().length() : newlineAt;
-        editable.insert(insertPos, "\n");
-        insertPos++; // 新行开头位置
+        // === 核心修复：强制在当前行末尾插入换行符 ===
+        int lineEnd = layout.getLineEnd(layout.getLineForOffset(sel));
+        // 如果当前行末尾已有换行符（非最后一行），则光标实际在下一行开头
+        boolean isAtLineEnd = (sel == lineEnd - (getText().charAt(lineEnd - 1) == '\n' ? 1 : 0));
+
+        int insertPos;
+        if (isAtLineEnd) {
+            // 情况1：光标已在行尾 → 插入新换行符创建空行
+            editable.insert(sel, "\n");
+            insertPos = sel + 1; // 新行开头位置
+        } else {
+            // 情况2：光标不在行尾 → 先跳到行尾再插入换行符
+            int lineStart = layout.getLineStart(layout.getLineForOffset(sel));
+            int newlineAt = getText().toString().indexOf('\n', lineStart);
+            insertPos = (newlineAt < 0) ? getText().length() : newlineAt;
+            editable.insert(insertPos, "\n");
+            insertPos++; // 新行开头位置
+        }
+        // ======================================
+
+        // 获取剪贴板内容（保持原有逻辑）
+        ClipboardManager clipboard = (ClipboardManager) getContext()
+                .getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null || !clipboard.hasPrimaryClip()) {
+            setSelection(insertPos);
+            return;
+        }
+
+        CharSequence clipText = clipboard.getPrimaryClip().getItemAt(0).coerceToText(getContext());
+        if (clipText == null) {
+            setSelection(insertPos);
+            return;
+        }
+
+        // 清理剪贴板文本的尾部换行（保持原有逻辑）
+        String text = clipText.toString().replaceAll("[\\r\\n]+$", "");
+        if (text.isEmpty()) {
+            setSelection(insertPos);
+            return;
+        }
+
+        editable.insert(insertPos, text);
+        setSelection(insertPos + text.length());
     }
-    // ======================================
-
-    // 获取剪贴板内容（保持原有逻辑）
-    ClipboardManager clipboard = (ClipboardManager) getContext()
-            .getSystemService(Context.CLIPBOARD_SERVICE);
-    if (clipboard == null || !clipboard.hasPrimaryClip()) {
-        setSelection(insertPos);
-        return;
-    }
-
-    CharSequence clipText = clipboard.getPrimaryClip().getItemAt(0).coerceToText(getContext());
-    if (clipText == null) {
-        setSelection(insertPos);
-        return;
-    }
-
-    // 清理剪贴板文本的尾部换行（保持原有逻辑）
-    String text = clipText.toString().replaceAll("[\\r\\n]+$", "");
-    if (text.isEmpty()) {
-        setSelection(insertPos);
-        return;
-    }
-
-    editable.insert(insertPos, text);
-    setSelection(insertPos + text.length());
-}
-
 
     private int getCurrentLineStart() {
         int sel = getSelectionStart();
-        if (sel < 0) return 0;
+        if (sel < 0)
+            return 0;
         Layout layout = getLayout();
         if (layout == null) {
             String text = getText().toString();
@@ -683,9 +830,11 @@ public void pasteCurrentLine() {
 
     private int getCurrentLineEnd() {
         int sel = getSelectionStart();
-        if (sel < 0) return getText().length();
+        if (sel < 0)
+            return getText().length();
         Layout layout = getLayout();
-        if (layout == null) return getText().length();
+        if (layout == null)
+            return getText().length();
         int line = layout.getLineForOffset(sel);
         return layout.getLineEnd(line);
     }
@@ -706,7 +855,8 @@ public void pasteCurrentLine() {
      */
     public void showAutoComplete() {
         int sel = getSelectionStart();
-        if (sel < 0) return;
+        if (sel < 0)
+            return;
         CharSequence text = getText();
         int lineStart = Math.max(0, text.toString().lastIndexOf('\n', sel - 1) + 1);
         CharSequence prefix = text.subSequence(lineStart, sel);
@@ -822,7 +972,8 @@ public void pasteCurrentLine() {
         if ("+-*/%<>=!&|^?:".indexOf(c) >= 0) {
             return false;
         }
-        // For anything else (newline, comment start, etc.) treat it as end-of-statement.
+        // For anything else (newline, comment start, etc.) treat it as
+        // end-of-statement.
         return true;
     }
 
@@ -860,7 +1011,8 @@ public void pasteCurrentLine() {
     }
 
     private void doHighlight() {
-        if (highlighting) return;
+        if (highlighting)
+            return;
         synchronized (highlightLock) {
             highlighting = true;
         }
@@ -915,58 +1067,57 @@ public void pasteCurrentLine() {
      * we only clear existing ForegroundColorSpans before applying.
      */
     private void applyRegexHighlight(SpannableStringBuilder builder, String text) {
-    clearSpans(builder);
+        clearSpans(builder);
 
-    // 1. 字符串字面量
-    colorMatches(builder, text, "\"([^\"\\\\]|\\\\.)*\"",
-            ContextCompat.getColor(getContext(), R.color.editor_string));
-    colorMatches(builder, text, "'([^'\\\\]|\\\\.)*'",
-            ContextCompat.getColor(getContext(), R.color.editor_string));
+        // 1. 字符串字面量
+        colorMatches(builder, text, "\"([^\"\\\\]|\\\\.)*\"",
+                ContextCompat.getColor(getContext(), R.color.editor_string));
+        colorMatches(builder, text, "'([^'\\\\]|\\\\.)*'",
+                ContextCompat.getColor(getContext(), R.color.editor_string));
 
-    // 2. Java 关键字
-    colorMatches(builder, text,
-            "\\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while)\\b",
-            ContextCompat.getColor(getContext(), R.color.editor_keyword));
+        // 2. Java 关键字
+        colorMatches(builder, text,
+                "\\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while)\\b",
+                ContextCompat.getColor(getContext(), R.color.editor_keyword));
 
-    // 3. 内置类型
-    colorMatches(builder, text,
-            "\\b(Effect|EffectContainer|Pal|Color|Draw|Lines|Fill|Mathf|Angles|Interp|Tmp|Fx|TextureRegion|SpriteBatch|Vec2|Vec3|Texture|Pixmap|Core)\\b",
-            ContextCompat.getColor(getContext(), R.color.editor_type));
+        // 3. 内置类型
+        colorMatches(builder, text,
+                "\\b(Effect|EffectContainer|Pal|Color|Draw|Lines|Fill|Mathf|Angles|Interp|Tmp|Fx|TextureRegion|SpriteBatch|Vec2|Vec3|Texture|Pixmap|Core)\\b",
+                ContextCompat.getColor(getContext(), R.color.editor_type));
 
-    // 4. 函数名
-    colorMatches(builder, text,
-            "\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?=\\(\\s*)",
-            ContextCompat.getColor(getContext(), R.color.editor_function));
+        // 4. 函数名
+        colorMatches(builder, text,
+                "\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?=\\(\\s*)",
+                ContextCompat.getColor(getContext(), R.color.editor_function));
 
-    // 5. 数字
-    colorMatches(builder, text, "\\b\\d+(\\.\\d+)?f?\\b",
-            ContextCompat.getColor(getContext(), R.color.editor_number));
-    colorMatches(builder, text, "\\b0x[0-9a-fA-F]+\\b",
-            ContextCompat.getColor(getContext(), R.color.editor_number));
+        // 5. 数字
+        colorMatches(builder, text, "\\b\\d+(\\.\\d+)?f?\\b",
+                ContextCompat.getColor(getContext(), R.color.editor_number));
+        colorMatches(builder, text, "\\b0x[0-9a-fA-F]+\\b",
+                ContextCompat.getColor(getContext(), R.color.editor_number));
 
-    // 6. 运算符
-    colorMatches(builder, text,
-            "(\\+\\+|--|\\+|-\\b|\\*|/|%|==|!=|<=|>=|<|>|&&|\\|\\||!|&|\\||^|~|<<|>>|>>>|=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=|>>>=)",
-            ContextCompat.getColor(getContext(), R.color.editor_operator));
+        // 6. 运算符
+        colorMatches(builder, text,
+                "(\\+\\+|--|\\+|-\\b|\\*|/|%|==|!=|<=|>=|<|>|&&|\\|\\||!|&|\\||^|~|<<|>>|>>>|=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=|>>>=)",
+                ContextCompat.getColor(getContext(), R.color.editor_operator));
 
-    // 7. 内置变量
-    colorMatches(builder, text,
-            "\\b(e|x|y|rotation|time|lifetime|color|id|fin|fout)\\b",
-            ContextCompat.getColor(getContext(), R.color.editor_variable));
+        // 7. 内置变量
+        colorMatches(builder, text,
+                "\\b(e|x|y|rotation|time|lifetime|color|id|fin|fout)\\b",
+                ContextCompat.getColor(getContext(), R.color.editor_variable));
 
-    // 8. 标点符号
-    colorMatches(builder, text,
-            "[{}\\[\\]();,.]",
-            ContextCompat.getColor(getContext(), R.color.editor_punctuation));
+        // 8. 标点符号
+        colorMatches(builder, text,
+                "[{}\\[\\]();,.]",
+                ContextCompat.getColor(getContext(), R.color.editor_punctuation));
 
-    // 9. 行注释（移到最后，强制覆盖所有其他高亮，保证注释统一灰色）
-    colorMatches(builder, text, "//.*",
-            ContextCompat.getColor(getContext(), R.color.editor_comment));
-     // 10. 块注释
-    colorMatches(builder, text, "/\\*[\\s\\S]*?\\*/",
-            ContextCompat.getColor(getContext(), R.color.editor_comment));
-}
-
+        // 9. 行注释（移到最后，强制覆盖所有其他高亮，保证注释统一灰色）
+        colorMatches(builder, text, "//.*",
+                ContextCompat.getColor(getContext(), R.color.editor_comment));
+        // 10. 块注释
+        colorMatches(builder, text, "/\\*[\\s\\S]*?\\*/",
+                ContextCompat.getColor(getContext(), R.color.editor_comment));
+    }
 
     private void clearSpans(SpannableStringBuilder builder) {
         ForegroundColorSpan[] spans = builder.getSpans(0, builder.length(), ForegroundColorSpan.class);
@@ -984,15 +1135,116 @@ public void pasteCurrentLine() {
         }
     }
 
-
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (scaleDetector != null) {
             scaleDetector.onTouchEvent(event);
-            // Prevent text selection from fighting with an active pinch-to-zoom gesture.
             if (scaleDetector.isInProgress()) {
+                if (isHorizontalScrolling) {
+                    isHorizontalScrolling = false;
+                    uiHandler.removeCallbacks(longPressRunnable);
+                    setCursorVisible(true);
+                }
                 return true;
             }
+        }
+
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                downX = event.getX();
+                downY = event.getY();
+                lastTouchX = event.getX();
+                lastTouchY = event.getY();
+                downTime = System.currentTimeMillis();
+                isHorizontalScrolling = false;
+                longPressTriggered = false;
+                downDispatched = false;
+                savedScrollX = getScrollX();
+                uiHandler.removeCallbacks(longPressRunnable);
+                uiHandler.postDelayed(longPressRunnable, 250);
+                return true;
+
+            case MotionEvent.ACTION_MOVE:
+                if (isHorizontalScrolling) {
+                    float dx = lastTouchX - event.getX();
+                    float dy = lastTouchY - event.getY();
+                    scrollBy((int) dx, (int) dy);
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    return true;
+                }
+
+                float dx = Math.abs(event.getX() - downX);
+                float dy = Math.abs(event.getY() - downY);
+                float touchSlop = android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop();
+                long elapsed = System.currentTimeMillis() - downTime;
+
+                if (!longPressTriggered && elapsed < 250 && dx > touchSlop * 1.2f && dx > dy * 1.5f) {
+                    isHorizontalScrolling = true;
+                    uiHandler.removeCallbacks(longPressRunnable);
+                    cancelLongPress();
+                    setCursorVisible(false);
+                    if (downDispatched) {
+                        MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        super.onTouchEvent(cancel);
+                        cancel.recycle();
+                    }
+                    scrollBy((int) (lastTouchX - event.getX()), (int) (lastTouchY - event.getY()));
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    return true;
+                }
+
+                if (!downDispatched) {
+                    downDispatched = true;
+                    int offset = getOffsetForPosition(downX, downY);
+                    if (offset >= 0)
+                        setSelection(offset);
+                    MotionEvent down = MotionEvent.obtain(event);
+                    down.setAction(MotionEvent.ACTION_DOWN);
+                    down.setLocation(downX, downY);
+                    super.onTouchEvent(down);
+                    down.recycle();
+                }
+                return super.onTouchEvent(event);
+
+            case MotionEvent.ACTION_UP:
+                uiHandler.removeCallbacks(longPressRunnable);
+                if (isHorizontalScrolling) {
+                    isHorizontalScrolling = false;
+                    setCursorVisible(true);
+                    float dxFinal = Math.abs(event.getX() - downX);
+                    float dyFinal = Math.abs(event.getY() - downY);
+                    float upSlop = android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop();
+                    if (dxFinal < upSlop && dyFinal < upSlop) {
+                        scrollTo(savedScrollX, getScrollY());
+                    }
+                    downDispatched = false;
+                    return true;
+                }
+
+                if (!downDispatched) {
+                    downDispatched = true;
+                    int offset = getOffsetForPosition(downX, downY);
+                    if (offset >= 0)
+                        setSelection(offset);
+                    MotionEvent down = MotionEvent.obtain(event);
+                    down.setAction(MotionEvent.ACTION_DOWN);
+                    down.setLocation(downX, downY);
+                    super.onTouchEvent(down);
+                    down.recycle();
+                }
+                boolean result = super.onTouchEvent(event);
+                downDispatched = false;
+                return result;
+
+            case MotionEvent.ACTION_CANCEL:
+                uiHandler.removeCallbacks(longPressRunnable);
+                isHorizontalScrolling = false;
+                setCursorVisible(true);
+                downDispatched = false;
+                break;
         }
         return super.onTouchEvent(event);
     }
@@ -1044,7 +1296,8 @@ public void pasteCurrentLine() {
     public void formatCode() {
         Editable editable = getText();
         String text = editable.toString();
-        if (text.trim().isEmpty()) return;
+        if (text.trim().isEmpty())
+            return;
 
         String[] lines = text.split("\n", -1);
         StringBuilder imports = new StringBuilder();
@@ -1062,7 +1315,8 @@ public void pasteCurrentLine() {
 
         String formattedBody = formatJavaBody(body.toString().trim());
         String result = imports.toString();
-        if (imports.length() > 0) result += "\n";
+        if (imports.length() > 0)
+            result += "\n";
         result += formattedBody;
 
         int oldSel = getSelectionStart();
@@ -1073,12 +1327,14 @@ public void pasteCurrentLine() {
 
         int newLen = result.length();
         int newSel = Math.min(oldSel, newLen);
-        if (newSel >= 0) setSelection(newSel);
+        if (newSel >= 0)
+            setSelection(newSel);
         notifyHistoryChanged();
     }
 
     /**
-     * Simple brace-aware formatter. Ignores braces inside strings and line comments.
+     * Simple brace-aware formatter. Ignores braces inside strings and line
+     * comments.
      */
     private String formatJavaBody(String text) {
         String[] rawLines = text.split("\n", -1);
@@ -1096,7 +1352,8 @@ public void pasteCurrentLine() {
             int braceDelta = countBraceDelta(line);
             // A closing brace reduces the indent of its own line.
             int lineIndent = indentLevel + (line.startsWith("}") ? -1 : 0);
-            if (lineIndent < 0) lineIndent = 0;
+            if (lineIndent < 0)
+                lineIndent = 0;
 
             for (int i = 0; i < lineIndent; i++) {
                 out.append(indent);
@@ -1104,7 +1361,8 @@ public void pasteCurrentLine() {
             out.append(line).append("\n");
 
             indentLevel += braceDelta;
-            if (indentLevel < 0) indentLevel = 0;
+            if (indentLevel < 0)
+                indentLevel = 0;
         }
 
         // Trim trailing blank lines but keep a single newline.
@@ -1143,8 +1401,10 @@ public void pasteCurrentLine() {
                 stringChar = c;
                 continue;
             }
-            if (c == '{') delta++;
-            else if (c == '}') delta--;
+            if (c == '{')
+                delta++;
+            else if (c == '}')
+                delta--;
         }
         return delta;
     }

@@ -16,6 +16,11 @@ import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.text.method.ScrollingMovementMethod;
+import android.text.Spannable;
+import android.text.SpannableString;
+import android.text.method.LinkMovementMethod;
+import android.text.style.ClickableSpan;
+import android.text.TextPaint;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
@@ -40,6 +45,8 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -47,6 +54,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.HashSet;
+import java.util.Set;
 
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
@@ -97,6 +106,11 @@ public class MainActivity extends AndroidApplication {
     private CodeEditorView codeEditor;
     private EffectPreviewView previewView;
     private TextView statusView;
+    private LinearLayout findReplacePanel;
+    private static final int MATCH_COLOR_OTHER = 0x662E7D32; // 其他匹配：半透明深绿
+    private static final int MATCH_COLOR_CURRENT = 0xFF4CAF50; // 当前选中：亮绿
+    private android.widget.EditText frFindInput, frReplaceInput;
+    private android.widget.TextView frCount;
     private FrameLayout previewContainer;
     private View rootView;
     private ExecutorService executor;
@@ -199,7 +213,6 @@ public class MainActivity extends AndroidApplication {
         Button btnCompile = findViewById(R.id.btn_compile);
         Button btnExport = findViewById(R.id.btn_export);
         Button btnReset = findViewById(R.id.btn_reset);
-        Button btnResetView = findViewById(R.id.btn_reset_view);
         Button btnComplete = findViewById(R.id.btn_complete);
         Button btnUndo = findViewById(R.id.btn_undo);
         Button btnRedo = findViewById(R.id.btn_redo);
@@ -207,6 +220,24 @@ public class MainActivity extends AndroidApplication {
         Button btnOrientation = findViewById(R.id.btn_orientation);
         Button btnFormat = findViewById(R.id.btn_format);
         Button btnRefresh = findViewById(R.id.btn_refresh);
+        Button btnFindReplace = findViewById(R.id.btn_find_replace);
+        if (btnFindReplace != null) {
+            btnFindReplace.setOnClickListener(v -> toggleFindReplace());
+        }
+
+        Button btnHelp = findViewById(R.id.btn_help);
+        if (btnHelp != null) {
+            btnHelp.setOnClickListener(v -> showHelp());
+        }
+
+        Button btnToggleLineToolsVisibility = findViewById(R.id.btn_toggle_line_tools_visibility);
+        View btnToggleLineTools = findViewById(R.id.btn_toggle_line_tools);
+        if (btnToggleLineToolsVisibility != null && btnToggleLineTools != null) {
+            btnToggleLineToolsVisibility.setOnClickListener(v -> {
+                boolean visible = btnToggleLineTools.getVisibility() == View.VISIBLE;
+                btnToggleLineTools.setVisibility(visible ? View.GONE : View.VISIBLE);
+            });
+        }
 
         btnCompile.setOnClickListener(v -> compileAndRun());
         btnExport.setOnClickListener(v -> exportCode());
@@ -219,10 +250,6 @@ public class MainActivity extends AndroidApplication {
             savedCode = null;
             compiledEffect = null;
             setStatus("已重置为示例代码", true);
-        });
-        btnResetView.setOnClickListener(v -> {
-            previewView.resetView();
-            setStatus("预览视图已重置", true);
         });
         btnComplete.setOnClickListener(v -> {
             if (codeEditor != null) {
@@ -291,6 +318,268 @@ public class MainActivity extends AndroidApplication {
         setupLineTools();
         ensureCustomSpritesFolder();
         StartupLog.logTime("bindViewsAndButtons finished", bindStart);
+        initFindReplacePanel();
+    }
+
+    private void initFindReplacePanel() {
+        FrameLayout codeContainer = (FrameLayout) codeEditor.getParent();
+        if (codeContainer == null)
+            return;
+
+        float density = getResources().getDisplayMetrics().density;
+        int pad = (int) (8 * density);
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xE61A1B26);
+        panel.setPadding(pad, pad, pad, pad);
+        panel.setVisibility(View.GONE);
+        panel.setClickable(true);
+
+        // 查找行
+        LinearLayout findRow = new LinearLayout(this);
+        findRow.setOrientation(LinearLayout.HORIZONTAL);
+        frFindInput = new android.widget.EditText(this);
+        frFindInput.setHint("查找");
+        frFindInput.setTextColor(getResources().getColor(R.color.editor_text));
+        frFindInput.setHintTextColor(0xFF565F89);
+        frFindInput.setTextSize(14f);
+        frFindInput.setTypeface(android.graphics.Typeface.MONOSPACE);
+        frFindInput.setBackground(null);
+        frFindInput.setSingleLine(true);
+        frFindInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_NEXT);
+        findRow.addView(frFindInput, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        frCount = new android.widget.TextView(this);
+        frCount.setText("搜索结果: 0");
+        frCount.setTextColor(getResources().getColor(R.color.teal_200));
+        frCount.setTextSize(12f);
+        frCount.setPadding(pad, 0, 0, 0);
+        findRow.addView(frCount);
+        panel.addView(findRow);
+
+        // 替换行
+        frReplaceInput = new android.widget.EditText(this);
+        frReplaceInput.setHint("替换为");
+        frReplaceInput.setTextColor(getResources().getColor(R.color.editor_text));
+        frReplaceInput.setHintTextColor(0xFF565F89);
+        frReplaceInput.setTextSize(14f);
+        frReplaceInput.setTypeface(android.graphics.Typeface.MONOSPACE);
+        frReplaceInput.setBackground(null);
+        frReplaceInput.setSingleLine(true);
+        panel.addView(frReplaceInput);
+
+        // 按钮行
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        String[] labels = { "上个", "下个", "替换", "全部", "×" };
+        android.view.View.OnClickListener[] actions = {
+                v -> findPrev(),
+                v -> findNext(),
+                v -> replaceOne(),
+                v -> replaceAll(),
+                v -> {
+                    findReplacePanel.setVisibility(View.GONE);
+                    clearFindHighlights();
+                    codeEditor.requestFocus();
+                }
+
+        };
+        for (int i = 0; i < labels.length; i++) {
+            Button btn = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            btn.setText(labels[i]);
+            btn.setTextColor(getResources().getColor(R.color.teal_200));
+            btn.setTextSize(12f);
+            btn.setOnClickListener(actions[i]);
+            btnRow.addView(btn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        panel.addView(btnRow);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.gravity = android.view.Gravity.BOTTOM;
+
+        codeContainer.addView(panel, lp);
+        findReplacePanel = panel;
+
+        frFindInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                updateFindCount();
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+            }
+        });
+    }
+
+    private void toggleFindReplace() {
+        if (findReplacePanel == null)
+            return;
+        boolean visible = findReplacePanel.getVisibility() == View.VISIBLE;
+        if (visible) {
+            findReplacePanel.setVisibility(View.GONE);
+            clearFindHighlights();
+            codeEditor.requestFocus();
+        } else {
+            findReplacePanel.setVisibility(View.VISIBLE);
+            frFindInput.requestFocus();
+            updateFindCount();
+        }
+    }
+
+    private void clearFindHighlights() {
+        android.text.Spannable spannable = codeEditor.getText();
+        android.text.style.BackgroundColorSpan[] spans = spannable.getSpans(
+                0, spannable.length(), android.text.style.BackgroundColorSpan.class);
+        for (android.text.style.BackgroundColorSpan span : spans) {
+            spannable.removeSpan(span);
+        }
+    }
+
+    private void applyFindHighlights(String query, int currentIndex) {
+        clearFindHighlights();
+        if (query == null || query.isEmpty())
+            return;
+        String text = codeEditor.getText().toString();
+        android.text.Spannable spannable = codeEditor.getText();
+        int idx = text.indexOf(query);
+        int matchIndex = 0;
+        while (idx >= 0) {
+            int color = (matchIndex == currentIndex) ? MATCH_COLOR_CURRENT : MATCH_COLOR_OTHER;
+            spannable.setSpan(new android.text.style.BackgroundColorSpan(color),
+                    idx, idx + query.length(),
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            matchIndex++;
+            idx = text.indexOf(query, idx + query.length());
+        }
+    }
+
+    private void findNext() {
+        String q = frFindInput.getText().toString();
+        if (q.isEmpty())
+            return;
+        String text = codeEditor.getText().toString();
+        // 从当前选中位置的末尾开始搜索，避免重复找到同一个
+        int start = codeEditor.getSelectionEnd();
+        if (start < 0)
+            start = 0;
+        int idx = text.indexOf(q, start);
+        if (idx < 0)
+            idx = text.indexOf(q); // 绕回开头
+        if (idx >= 0) {
+            codeEditor.setSelection(idx, idx + q.length());
+            int currentIndex = 0, temp = text.indexOf(q);
+            while (temp >= 0 && temp != idx) {
+                currentIndex++;
+                temp = text.indexOf(q, temp + q.length());
+            }
+            applyFindHighlights(q, currentIndex);
+        }
+        updateFindCount();
+    }
+
+    private void findPrev() {
+        String q = frFindInput.getText().toString();
+        if (q.isEmpty())
+            return;
+        String text = codeEditor.getText().toString();
+        int start = codeEditor.getSelectionStart() - 1;
+        if (start < 0)
+            start = text.length() - 1;
+        int idx = text.lastIndexOf(q, start);
+        if (idx < 0)
+            idx = text.lastIndexOf(q);
+        if (idx >= 0) {
+            codeEditor.setSelection(idx, idx + q.length());
+            int currentIndex = 0, temp = text.indexOf(q);
+            while (temp >= 0 && temp != idx) {
+                currentIndex++;
+                temp = text.indexOf(q, temp + q.length());
+            }
+            applyFindHighlights(q, currentIndex);
+        }
+        updateFindCount();
+    }
+
+    private void replaceOne() {
+        String q = frFindInput.getText().toString();
+        String r = frReplaceInput.getText().toString();
+        if (q.isEmpty())
+            return;
+        android.text.Editable text = codeEditor.getText();
+        int selStart = codeEditor.getSelectionStart();
+        int selEnd = codeEditor.getSelectionEnd();
+        if (selEnd > selStart && text.subSequence(selStart, selEnd).toString().equals(q)) {
+            text.replace(selStart, selEnd, r);
+            codeEditor.setSelection(selStart + r.length());
+        } else {
+            findNext();
+        }
+        codeEditor.dismissAutoComplete();
+        updateFindCount();
+    }
+
+    private void replaceAll() {
+        String q = frFindInput.getText().toString();
+        String r = frReplaceInput.getText().toString();
+        if (q.isEmpty())
+            return;
+        android.text.Editable text = codeEditor.getText();
+        String str = text.toString();
+        int idx = str.indexOf(q);
+        while (idx >= 0) {
+            text.replace(idx, idx + q.length(), r);
+            str = text.toString();
+            idx = str.indexOf(q, idx + r.length());
+        }
+        codeEditor.dismissAutoComplete();
+        updateFindCount();
+    }
+
+    private void updateFindCount() {
+        String q = frFindInput.getText().toString();
+        if (q.isEmpty() || frCount == null) {
+            if (frCount != null)
+                frCount.setText("0/0");
+            clearFindHighlights();
+            return;
+        }
+        String text = codeEditor.getText().toString();
+        int total = 0, current = 0;
+        int selStart = codeEditor.getSelectionStart();
+        int idx = text.indexOf(q);
+        while (idx >= 0) {
+            total++;
+            if (idx == selStart)
+                current = total;
+            idx = text.indexOf(q, idx + q.length());
+        }
+        frCount.setText(current + "/" + total);
+        applyFindHighlights(q, current > 0 ? current - 1 : -1);
+    }
+
+    private void showHelp() {
+        String help = readAssetText("help.md");
+        new AlertDialog.Builder(this)
+                .setTitle("使用说明")
+                .setMessage(help)
+                .setPositiveButton("确定", null)
+                .show();
+    }
+
+    private String readAssetText(String path) {
+        try (InputStream in = getAssets().open(path)) {
+            byte[] buf = new byte[in.available()];
+            in.read(buf);
+            return new String(buf, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "无法加载帮助文档: " + e.getMessage();
+        }
     }
 
     private void setupLineTools() {
@@ -751,29 +1040,24 @@ public class MainActivity extends AndroidApplication {
 
     private void compileAndRun() {
         String source = codeEditor.getText().toString();
+        codeEditor.clearErrorLines(); // ← 新增：每次编译前清空旧红标
         setStatus("编译中...", true);
         executor.execute(() -> {
             try {
-
                 Effect effect = EffectCompiler.compile(source, this);
                 compiledEffect = effect;
                 uiHandler.post(() -> {
-                    // setStatus(getString(R.string.compile_ok) + "，正在重启以重新渲染…", true);
-                    // Toast.makeText(this, R.string.compile_ok, Toast.LENGTH_SHORT).show();
-                    // Recompile should also force a full restart so the rendering
-                    // surface is rebuilt from scratch, matching the refresh action.
-                    // uiHandler.postDelayed(this::restartApp, 400);
-                    // Custom sprites copied into the sprites folder while the app was
-                    // backgrounded are not in the atlas yet. Reload it before applying
-                    // the newly compiled effect so Draw.rect(String, ...) can find them.
                     previewView.reloadAtlas();
                     previewView.setEffect(effect);
-
                 });
             } catch (Throwable ex) {
                 Log.e(TAG, "Compilation failed", ex);
                 String msg = ex.getMessage();
-                // EffectCompiler already prefixes its formatted message with "编译失败:".
+
+                // ← 新增：解析错误行号并标红
+                Set<Integer> errorLines = parseErrorLines(msg);
+                uiHandler.post(() -> codeEditor.setErrorLines(errorLines));
+
                 if (msg != null && msg.startsWith(getString(R.string.compile_error) + ":")) {
                     uiHandler.post(() -> setStatus(msg, false));
                 } else {
@@ -781,6 +1065,22 @@ public class MainActivity extends AndroidApplication {
                 }
             }
         });
+    }
+
+    /** 从 EffectCompiler 抛出的中文异常信息中提取 "第 X 行:" 里的行号 */
+    private Set<Integer> parseErrorLines(String errorMessage) {
+        Set<Integer> lines = new HashSet<>();
+        if (errorMessage == null)
+            return lines;
+        Pattern pattern = Pattern.compile("第\\s+(\\d+)\\s+行:");
+        Matcher matcher = pattern.matcher(errorMessage);
+        while (matcher.find()) {
+            try {
+                lines.add(Integer.parseInt(matcher.group(1)));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return lines;
     }
 
     /**
@@ -1000,10 +1300,45 @@ public class MainActivity extends AndroidApplication {
     }
 
     private void setStatus(String message, boolean success) {
-        if (statusView == null)
-            return;
-        statusView.setText(message);
-        statusView.setTextColor(ContextCompat.getColor(this, success ? R.color.status_ok : R.color.status_error));
+        if (!success && message != null) {
+            SpannableString spannable = new SpannableString(message);
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("第\\s+(\\d+)\\s+行[:：]");
+            java.util.regex.Matcher matcher = pattern.matcher(message);
+            while (matcher.find()) {
+                final int lineNum;
+                try {
+                    lineNum = Integer.parseInt(matcher.group(1));
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                int start = matcher.start();
+                int end = matcher.end();
+                spannable.setSpan(new ClickableSpan() {
+                    @Override
+                    public void onClick(@NonNull View widget) {
+                        if (codeEditor != null) {
+                            codeEditor.goToLine(lineNum);
+                        }
+                    }
+
+                    @Override
+                    public void updateDrawState(@NonNull TextPaint ds) {
+                        super.updateDrawState(ds);
+                        ds.setUnderlineText(true);
+                    }
+                }, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            statusView.setText(spannable);
+            statusView.setMovementMethod(LinkMovementMethod.getInstance());
+        } else {
+            statusView.setText(message);
+            statusView.setMovementMethod(null);
+        }
+
+        // 保持你原来的颜色逻辑，下面只是示例，按你实际代码保留
+        statusView.setTextColor(success
+                ? getResources().getColor(android.R.color.holo_green_dark)
+                : getResources().getColor(android.R.color.holo_red_dark));
     }
 
     private void removeKeyboardListener() {

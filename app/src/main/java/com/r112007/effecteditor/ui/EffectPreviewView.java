@@ -6,6 +6,8 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.view.Gravity;
 
 import arc.ApplicationListener;
 import arc.backend.android.AndroidApplication;
@@ -31,11 +33,14 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 
 /**
- * Preview pane that embeds an Arc GLSurfaceView and renders a compiled {@link Effect} in a loop.
+ * Preview pane that embeds an Arc GLSurfaceView and renders a compiled
+ * {@link Effect} in a loop.
  * The effect is replayed continuously so the user sees the animation.
  * <p>
- * Built-in sprites are loaded from APK assets ({@code sprites/effects/}) and custom sprites
- * can be placed in the app's external files directory ({@code Android/data/.../files/sprites/}).
+ * Built-in sprites are loaded from APK assets ({@code sprites/effects/}) and
+ * custom sprites
+ * can be placed in the app's external files directory
+ * ({@code Android/data/.../files/sprites/}).
  * The preview also supports pinch-to-zoom and drag-to-pan.
  */
 public class EffectPreviewView extends FrameLayout {
@@ -43,6 +48,8 @@ public class EffectPreviewView extends FrameLayout {
     private static final String TAG = "EffectPreviewView";
     private static final String ASSET_SPRITES_DIR = "sprites/effects";
     private static final String CUSTOM_SPRITES_DIR = "sprites";
+    private TextView hudView;
+    private volatile boolean showHud = true;
 
     private View arcView;
     private AndroidApplication hostActivity;
@@ -50,9 +57,11 @@ public class EffectPreviewView extends FrameLayout {
     private volatile Effect currentEffect;
     private volatile boolean paused = true;
     private volatile boolean restartPreview;
-    /** The atlas is owned by the GL thread but its reference lives here so the
-     *  UI thread can request a reload when custom sprites are added while the app is
-     *  in the background. */
+    /**
+     * The atlas is owned by the GL thread but its reference lives here so the
+     * UI thread can request a reload when custom sprites are added while the app is
+     * in the background.
+     */
     private TextureAtlas previewAtlas;
 
     // Zoom / pan state (touched on UI thread, read on GL thread).
@@ -66,6 +75,8 @@ public class EffectPreviewView extends FrameLayout {
     private static final float MAX_SCALE = 6f;
 
     private final ApplicationListener previewListener = new ApplicationListener() {
+        private float fpsAcc = 0;
+        private float lastFps = 0;
         private float time;
         private static final float loopInterval = 1.5f; // seconds between replays
         private SpriteBatch batch;
@@ -277,14 +288,29 @@ public class EffectPreviewView extends FrameLayout {
                         0f,
                         cx,
                         cy,
-                        null
-                );
+                        null);
             }
 
             // Flush any pending draw commands and reset global state so the next
             // effect/replay starts from a known default.
             Draw.flush();
             safeDrawReset();
+
+            fpsAcc += delta;
+            if (fpsAcc >= 0.5f) {
+                lastFps = 1f / Math.max(delta, 0.0001f);
+                fpsAcc = 0;
+            }
+            float displayTime = Math.min(time * 60f, effect.lifetime);
+            if (showHud && hudView != null) {
+                final String txt = String.format("FPS:%.1f\nTime:%.1f/%.0f",
+                        lastFps, displayTime, effect.lifetime);
+                post(() -> {
+                    if (hudView != null)
+                        hudView.setText(txt);
+                });
+            }
+
         }
 
         private void safeDrawReset() {
@@ -327,7 +353,8 @@ public class EffectPreviewView extends FrameLayout {
 
         @Override
         public void resize(int width, int height) {
-            if (width <= 0 || height <= 0) return;
+            if (width <= 0 || height <= 0)
+                return;
             viewWidth = width;
             viewHeight = height;
 
@@ -385,9 +412,11 @@ public class EffectPreviewView extends FrameLayout {
     /**
      * Creates a TextureAtlas that contains:
      * <ul>
-     *   <li>The regions Arc's Fill / Lines / Draw primitives need.</li>
-     *   <li>All Mindustry effect sprites bundled in {@code assets/sprites/effects/}.</li>
-     *   <li>All custom sprites placed in {@code Android/data/.../files/sprites/}.</li>
+     * <li>The regions Arc's Fill / Lines / Draw primitives need.</li>
+     * <li>All Mindustry effect sprites bundled in
+     * {@code assets/sprites/effects/}.</li>
+     * <li>All custom sprites placed in
+     * {@code Android/data/.../files/sprites/}.</li>
      * </ul>
      */
     private TextureAtlas createPreviewAtlas() {
@@ -397,7 +426,8 @@ public class EffectPreviewView extends FrameLayout {
         // Load built-in sprites from assets first. Custom sprites may override them.
         loadSpritesFromAssets(context, atlas, ASSET_SPRITES_DIR);
 
-        // Load custom sprites from external storage, allowing them to override built-ins.
+        // Load custom sprites from external storage, allowing them to override
+        // built-ins.
         File customDir = new File(context.getExternalFilesDir(null), CUSTOM_SPRITES_DIR);
         if (customDir.exists() && customDir.isDirectory()) {
             loadSpritesFromDirectory(atlas, customDir);
@@ -454,9 +484,11 @@ public class EffectPreviewView extends FrameLayout {
     private void loadSpritesFromAssets(Context context, TextureAtlas atlas, String dir) {
         try {
             String[] names = context.getAssets().list(dir);
-            if (names == null) return;
+            if (names == null)
+                return;
             for (String name : names) {
-                if (!name.toLowerCase().endsWith(".png")) continue;
+                if (!name.toLowerCase().endsWith(".png"))
+                    continue;
                 String assetPath = dir + "/" + name;
                 String regionName = name.substring(0, name.length() - 4);
                 try (InputStream in = context.getAssets().open(assetPath)) {
@@ -472,11 +504,14 @@ public class EffectPreviewView extends FrameLayout {
 
     private void loadSpritesFromDirectory(TextureAtlas atlas, File dir) {
         File[] files = dir.listFiles();
-        if (files == null) return;
+        if (files == null)
+            return;
         for (File file : files) {
-            if (!file.isFile()) continue;
+            if (!file.isFile())
+                continue;
             String name = file.getName();
-            if (!name.toLowerCase().endsWith(".png")) continue;
+            if (!name.toLowerCase().endsWith(".png"))
+                continue;
             String regionName = name.substring(0, name.length() - 4);
             try (InputStream in = new java.io.FileInputStream(file)) {
                 loadSpriteStreamIntoAtlas(in, atlas, regionName);
@@ -529,12 +564,15 @@ public class EffectPreviewView extends FrameLayout {
     }
 
     /**
-     * Disposes the old Arc surface and creates a fresh one. This is the same recovery
+     * Disposes the old Arc surface and creates a fresh one. This is the same
+     * recovery
      * path used on orientation changes and is the most reliable way to bring the
-     * preview back after the GL context was lost while the app was in the background.
+     * preview back after the GL context was lost while the app was in the
+     * background.
      */
     public void reinitialize() {
-        if (hostActivity == null || hostConfig == null) return;
+        if (hostActivity == null || hostConfig == null)
+            return;
         Effect saved = currentEffect;
         clearEffect();
         recreateSurface();
@@ -546,7 +584,8 @@ public class EffectPreviewView extends FrameLayout {
     private void recreateSurface() {
         AndroidApplication activity = hostActivity;
         AndroidApplicationConfiguration config = hostConfig;
-        if (activity == null || config == null) return;
+        if (activity == null || config == null)
+            return;
 
         if (arcView != null) {
             // Clean up GL resources from the previous surface before the listener is
@@ -564,6 +603,31 @@ public class EffectPreviewView extends FrameLayout {
         paused = false;
 
         setupTouchHandling();
+        initHud();
+    }
+
+    private void initHud() {
+        if (hudView != null)
+            return;
+        Context ctx = getContext();
+        hudView = new TextView(ctx);
+        hudView.setTextColor(0xFFFFFFFF);
+        hudView.setBackgroundColor(0x80000000);
+        hudView.setTextSize(10);
+        hudView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        hudView.setPadding(8, 4, 8, 4);
+        LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.setMargins(8, 8, 0, 0);
+        addView(hudView, lp);
+    }
+
+    public void setShowHud(boolean show) {
+        showHud = show;
+        post(() -> {
+            if (hudView != null)
+                hudView.setVisibility(show ? VISIBLE : GONE);
+        });
     }
 
     private void setupTouchHandling() {
