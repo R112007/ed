@@ -70,13 +70,13 @@ import arc.util.Time;
 import mindustry.entities.Effect;
 
 /**
- * Main activity hosting the Effect editor.
- * Extends Arc's AndroidApplication so the OpenGL surface can be embedded with
- * full lifecycle support.
- * Layouts are provided in res/layout (portrait) and res/layout-land (landscape)
- * so the
- * preview pane and code pane swap automatically on orientation changes.
+ * Main activity hosting the Effect editor. Extends Arc's AndroidApplication so the OpenGL surface
+ * can be embedded with full lifecycle support. Layouts are provided in res/layout (portrait) and
+ * res/layout-land (landscape) so the preview pane and code pane swap automatically on orientation
+ * changes.
  */
+import com.r112007.effecteditor.analysis.ClassReverseParser;
+
 public class MainActivity extends AndroidApplication {
 
     private static final String TAG = "MainActivity";
@@ -229,6 +229,10 @@ public class MainActivity extends AndroidApplication {
         if (btnHelp != null) {
             btnHelp.setOnClickListener(v -> showHelp());
         }
+        Button btnImportClass = findViewById(R.id.btn_import_class);
+        if (btnImportClass != null) {
+            btnImportClass.setOnClickListener(v -> showImportClassDialog());
+        }
 
         Button btnToggleLineToolsVisibility = findViewById(R.id.btn_toggle_line_tools_visibility);
         View btnToggleLineTools = findViewById(R.id.btn_toggle_line_tools);
@@ -298,12 +302,10 @@ public class MainActivity extends AndroidApplication {
 
         codeEditor.addTextChangedListener(new TextWatcher() {
             @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-            }
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 
             @Override
-            public void onTextChanged(CharSequence s, int start, int before, int count) {
-            }
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
 
             @Override
             public void afterTextChanged(Editable s) {
@@ -372,7 +374,7 @@ public class MainActivity extends AndroidApplication {
         // 按钮行
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        String[] labels = { "上个", "下个", "替换", "全部", "×" };
+        String[] labels = {"上个", "下个", "替换", "全部", "×"};
         android.view.View.OnClickListener[] actions = {
                 v -> findPrev(),
                 v -> findNext(),
@@ -383,7 +385,6 @@ public class MainActivity extends AndroidApplication {
                     clearFindHighlights();
                     codeEditor.requestFocus();
                 }
-
         };
         for (int i = 0; i < labels.length; i++) {
             Button btn = new Button(this, null, android.R.attr.borderlessButtonStyle);
@@ -395,7 +396,7 @@ public class MainActivity extends AndroidApplication {
         }
         panel.addView(btnRow);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = android.view.Gravity.BOTTOM;
 
         codeContainer.addView(panel, lp);
@@ -403,8 +404,7 @@ public class MainActivity extends AndroidApplication {
 
         frFindInput.addTextChangedListener(new android.text.TextWatcher() {
             @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-            }
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -412,8 +412,7 @@ public class MainActivity extends AndroidApplication {
             }
 
             @Override
-            public void afterTextChanged(android.text.Editable s) {
-            }
+            public void afterTextChanged(android.text.Editable s) {}
         });
     }
 
@@ -655,15 +654,15 @@ public class MainActivity extends AndroidApplication {
             rowLayout.setOrientation(LinearLayout.HORIZONTAL);
             rowLayout.setPadding(rowPadding, rowPadding, rowPadding, rowPadding);
             rowLayout.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
 
             for (int c = 0; c < row.size(); c++) {
                 String label = row.get(c);
                 Button btn = createKeyButton(label);
 
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                        0, buttonHeight, 1f);
+                0, buttonHeight, 1f);
                 params.setMargins(1, 1, 1, 1);
                 btn.setLayoutParams(params);
 
@@ -1084,13 +1083,12 @@ public class MainActivity extends AndroidApplication {
     }
 
     /**
-     * Restarts the application by scheduling a fresh launcher Intent via
-     * {@link AlarmManager} and then killing the current process. The AlarmManager
-     * path is required because calling {@code Process.killProcess} directly would
-     * cancel any in-flight {@code startActivity} request scheduled in the same
-     * process. By handing the new-launch intent to the system alarm service, the
-     * launch survives the process death and starts MainActivity in a brand new
-     * process so all GL/atlas/editor state is reinitialised from scratch.
+     * Restarts the application by scheduling a fresh launcher Intent via {@link AlarmManager} and
+     * then killing the current process. The AlarmManager path is required because calling {@code
+     * Process.killProcess} directly would cancel any in-flight {@code startActivity} request
+     * scheduled in the same process. By handing the new-launch intent to the system alarm service,
+     * the launch survives the process death and starts MainActivity in a brand new process so all
+     * GL/atlas/editor state is reinitialised from scratch.
      */
     private void restartApp() {
         try {
@@ -1118,9 +1116,9 @@ public class MainActivity extends AndroidApplication {
     private void exportCode() {
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
                 ContextCompat.checkSelfPermission(this,
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this,
-                    new String[] { Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQUEST_STORAGE);
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_STORAGE);
             return;
         }
         doExport();
@@ -1129,12 +1127,17 @@ public class MainActivity extends AndroidApplication {
     private void doExport() {
         String source = codeEditor.getText().toString();
         executor.execute(() -> {
-            File dir = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            File baseDir = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
                     ? getExternalFilesDir(null)
                     : android.os.Environment
                             .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
-            if (dir == null) {
+            if (baseDir == null) {
                 uiHandler.post(() -> setStatus("导出失败: 无法获取目录", false));
+                return;
+            }
+            File dir = new File(baseDir, "effects");
+            if (!dir.exists() && !dir.mkdirs()) {
+                uiHandler.post(() -> setStatus("导出失败: 无法创建 effects 目录", false));
                 return;
             }
             File out = new File(dir, "Effect_" + System.currentTimeMillis() + ".java");
@@ -1207,9 +1210,9 @@ public class MainActivity extends AndroidApplication {
     }
 
     /**
-     * Returns the index of the first top-level {@code new Effect(} in {@code code},
-     * skipping strings and comments and tracking brace nesting. Returns -1 if no
-     * top-level Effect expression is found.
+     * Returns the index of the first top-level {@code new Effect(} in {@code code}, skipping
+     * strings and comments and tracking brace nesting. Returns -1 if no top-level Effect expression
+     * is found.
      */
     private static int findTopLevelNewEffect(String code) {
         int i = 0;
@@ -1408,6 +1411,83 @@ public class MainActivity extends AndroidApplication {
     @Override
     public long getJavaHeap() {
         return Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+    }
+
+    /** 弹出对话框，让用户粘贴完整 Java 类代码，反向解析为编辑器内部格式。 */
+    private void showImportClassDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("导入完整类");
+
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("粘贴完整的 .java 类代码…");
+        input.setMinLines(12);
+        input.setTypeface(android.graphics.Typeface.MONOSPACE);
+        input.setTextColor(getResources().getColor(R.color.editor_text));
+        input.setBackgroundColor(0xFF1A1B26);
+        int pad = (int) (12 * getResources().getDisplayMetrics().density);
+        input.setPadding(pad, pad, pad, pad);
+        builder.setView(input);
+
+        builder.setPositiveButton("解析", (dialog, which) -> {
+            String source = input.getText().toString();
+            if (source.trim().isEmpty()) {
+                setStatus("粘贴内容为空", false);
+                return;
+            }
+            try {
+                ClassReverseParser.ParseResult result = ClassReverseParser.parse(source, null);
+
+                StringBuilder code = new StringBuilder();
+                for (String imp : result.imports) {
+                    code.append(imp).append("\n");
+                }
+                if (!result.imports.isEmpty()) {
+                    code.append("\n");
+                }
+                // 自定义变量
+                for (String f : result.extraFields) {
+                    code.append(f).append(";\n");
+                }
+                if (!result.extraFields.isEmpty()) code.append("\n");
+
+                // 工具方法
+                for (String m : result.methods) {
+                    code.append(m).append("\n\n");
+                }
+
+                // 主 Effect 初始化表达式（核心内容）
+                code.append(result.mainEffectCode);
+
+                // 其他 Effect 定义（注释掉）
+                for (String efCode : result.otherEffectCodes) {
+                    code.append(",\n/*").append(efCode).append("*/");
+                }
+                code.append(";\n");
+
+                codeEditor.setText(code.toString());
+                codeEditor.clearHistory();
+                codeEditor.setSelection(0);
+
+                setStatus("导入成功: " + result.imports.size() + " imports, "
+                        + result.methods.size() + " 方法, "
+                        + result.otherEffectCodes.size() + " 其他 Effect", true);
+
+            } catch (Exception e) {
+                setStatus("解析失败: " + e.getMessage(), false);
+            }
+        });
+        builder.setNegativeButton("取消", null);
+        builder.show();
+    }
+
+    private String indent(String text) {
+        if (text == null || text.isEmpty()) return "";
+        String[] lines = text.split("\n");
+        StringBuilder sb = new StringBuilder();
+        for (String line : lines) {
+            sb.append("    ").append(line).append("\n");
+        }
+        return sb.toString().trim();
     }
 
     @Override

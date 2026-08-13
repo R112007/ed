@@ -30,4 +30,5 @@
     <string name="action_find_replace">查找</string>
 <string name="action_help">帮助</string>
 <string name="action_toggle_line_tools_visibility">行显</string>
+    <string name="action_import_class">导入类</string>
 </resources>

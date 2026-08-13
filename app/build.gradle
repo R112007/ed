@@ -16,7 +16,7 @@ android {
 
     defaultConfig {
         applicationId 'com.r112007.effecteditor'
-        minSdk 21
+        minSdk 30
         targetSdk 34
         versionCode 1
         versionName '1.0'
@@ -167,5 +167,13 @@ dependencies {
     // LocalVariableTable, since reflection alone returns arg0/arg1 for
     // classes compiled without -parameters.
     implementation 'org.ow2.asm:asm:9.7'
+
+    // Sora Editor for shader code editing with LSP support
+    implementation 'io.github.Rosemoe.sora-editor:editor:0.23.4'
+    implementation 'io.github.Rosemoe.sora-editor:editor-lsp:0.23.4'
+    // LSP4J is transitively included by editor-lsp
+    // Explicit LSP4J dependencies to ensure compilation
+    implementation 'org.eclipse.lsp4j:org.eclipse.lsp4j:0.21.2'
+    implementation 'org.eclipse.lsp4j:org.eclipse.lsp4j.jsonrpc:0.21.2'
 }
 
